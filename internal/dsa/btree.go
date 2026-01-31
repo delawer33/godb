@@ -124,6 +124,14 @@ func leafInsert(new BN, old BN, idx uint16, key []byte, val []byte) {
 	nodeAppendRange(new, old, idx+1, idx, old.nkeys()-idx)	
 }
 
+func leadUpdate(new BN, old BN, idx uint16m key []byte, val []byte) {
+	nodeAppendRange(new, old, 0, 0, idx)
+	nodeAppendKV(new, idx, 0, key, val)
+	if idx+1 < old.nkeys() {
+		nodeAppendRange(new, old, idx+1, idx+1, old.nkeys()-idx-1)
+	}
+}
+
 func nodeAppendKV(new BN, idx uint16, ptr uint64, key []byte, val []byte) {
 	new.setPtr(idx, ptr)
 	pos := new.kvPos(idx)
@@ -162,6 +170,68 @@ func nodeReplaceKidN(tree *BT, new BN, old BN, idx uint16, kids ...BN) {
 		nodeAppendKV(new, idx+uint16(i), tree.new(node), node.getKey(0), nil)
 	}
 	nodeAppendRange(new, old, idx+inc, idx+1, old.nkeys()-idx-1)
+}
+
+func nodeSplit2(left BN, right BN, old BN) {
+	nkeys := old.nkeys()
+	splitIdx := nkeys / 2
+	if splitIdx == 0 {
+		splitIdx = 1
+	}
+	btype := old.btype()
+	left.setHeader(btype, splitIdx)
+	right.setHeader(btype, nkeys-splitIdx)
+
+	nodeAppendRange(left, old, 0, 0, splitIdx)
+	nodeAppendRange(right, old, 0, splitIdx, nkeys-splitIdx)
+}
+
+func nodeSplit3(old BN) (uint16, [3]BN) {
+	if old.nbytes() <= BT_PAGE_SIZE {
+		old = old[:BT_PAGE_SIZE]
+		return 1, [3]BN{old}
+	}
+	left := BN(make([]byte, 2*BT_PAGE_SIZE))
+	right := BN(make([]byte, BT_PAGE_SIZE))
+	nodeSplit2(left, right, old)
+	if left.nbytes() <= BT_PAGE_SIZE {
+		left = left[:BT_PAGE_SIZE]
+		return 2, [3]BN{left, right}
+	}
+	leftleft := BN(make([]byte, BT_PAGE_SIZE))
+	middle := BN(make([]byte, BT_PAGE_SIZE))
+	nodeSplit2(leftleft, middle, left)
+	assert(leftleft.nbytes() <= BT_PAGE_SIZE)
+	return 3, [3]BN{leftleft, middle, right}
+}
+
+// insert a KV into a node, the result might be split.
+// the caller is responsible for deallocating the input node
+// and splitting and allocating result nodes.
+func treeInsert(tree *BT, node BN, key []byte, val []byte) BN {
+	new := BN(make([]byte, 2*BT_PAGE_SIZE))
+	idx := nodeLookupLE(node, key)
+	switch node.btype() {
+	case BN_LEAF:
+		if bytes.Equal(key, node.getKey(idx)) {
+			leafUpdate(new, node, idx, key, val)
+		} else {
+			leafInsert(new, node, idx+1, key, val)
+		}
+	case BN_NODE:
+		 nodeInsert(tree, new, node, idx, key, val)
+	default:
+		panic("bad node")
+	}
+	return new
+}
+
+func nodeInsert(tree *BT, new BN, node BN, idx uint16, key []byte, val []byte) {
+	kptr := node.getPtr(idx)
+	knode := treeInsert(tree, tree.get(kptr), key, val)
+	nsplit, split := nodeSplit3(knode)
+	tree.del(kptr)
+	nodeReplaceKidN(tree, new, node, idx, split[:nsplit]...)
 }
 
 
