@@ -124,7 +124,8 @@ func leafInsert(new BN, old BN, idx uint16, key []byte, val []byte) {
 	nodeAppendRange(new, old, idx+1, idx, old.nkeys()-idx)	
 }
 
-func leadUpdate(new BN, old BN, idx uint16m key []byte, val []byte) {
+func leafUpdate(new BN, old BN, idx uint16, key []byte, val []byte) {
+	new.setHeader(BN_LEAF, old.nkeys())
 	nodeAppendRange(new, old, 0, 0, idx)
 	nodeAppendKV(new, idx, 0, key, val)
 	if idx+1 < old.nkeys() {
@@ -248,7 +249,7 @@ func (tree *BT) Insert(key []byte, val []byte) {
 	}
 	node := treeInsert(tree, tree.get(tree.root), key, val)
 	nsplit, split := nodeSplit3(node)
-	tree.del(root)
+	tree.del(tree.root)
 	if nsplit > 1 {
 		// add new level
 		root := BN(make([]byte, BT_PAGE_SIZE))
@@ -265,10 +266,59 @@ func (tree *BT) Insert(key []byte, val []byte) {
 
 func (tree *BT) Delete(key []byte) bool
 
-func leafDelete(new BN, old BN, idx uint16)
+func leafDelete(new BN, old BN, idx uint16) {
+	assert(idx < old.nkeys())
+	new.setHeader(BN_LEAF, old.nkeys()-1)
+	nodeAppendRange(new, old, 0, 0, idx)
 
-func nodeMerge(new BN, left BN, right BN)
+	if idx+1 < old.nkeys() {
+		nodeAppendRange(new, old, idx, idx+1, old.nkeys()-idx-1)
+	}
+}
 
-func nodeReplace2Kid(new BN, old BN, idx uint16, ptr uint64, key []byte)
+func nodeMerge(new BN, left BN, right BN) {
+	assert(left.btype() == right.btype())
+	new.setHeader(left.btype(), left.nkeys()+right.nkeys())
+	nodeAppendRange(new, left, 0, 0, left.nkeys())
+	nodeAppendRange(new, left, left.nkeys(), 0, right.nkeys())
+}
 
+func shouldMerge(tree *BT, node BN, idx uint16, updated BN) (int, BN)
 
+func nodeReplace2Kid(new BN, old BN, idx uint16, ptr uint64, key []byte) {
+	// asserts of type and idx???
+	new.setHeader(BN_NODE, old.nkeys()-1)
+	nodeAppendRange(new, old, 0, 0, idx)
+	nodeAppendKV(new, idx, ptr, key, nil)
+	
+	if idx+2 < old.nkeys() {
+		nodeAppendRange(new, old, idx+1, idx+2, old.nkeys()-idx-2)
+	}
+}
+
+func treeDelete (tree *BT, node BN, key []byte) BN {
+	if node.btype() == BN_LEAF {
+		idx := nodeLookupLE(node, key)
+		if idx == 0 || !bytes.Equal(node.getKey(idx), key) {
+			return nil
+		}
+		new := BN(make([]byte, BT_PAGE_SIZE))
+		leafDelete(new, node, idx)
+		return new
+	}
+	idx := nodeLookupLE(node, key)
+	return nodeDelete(tree, node, idx, key)
+}
+
+func nodeDelete(tree *BT, node BN, idx uint16, key []byte) BN {
+	kptr := node.getPtr(idx)
+	updated := treeDelete(tree, tree.get(kptr), key)
+	if len(updated) == 0 {
+		return BN{}
+	}
+	tree.del(kptr)
+
+	new := BN(make([]byte, BT_PAGE_SIZE))
+	
+	// TODO check for merging
+}
