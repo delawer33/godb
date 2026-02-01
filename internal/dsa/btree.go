@@ -1,8 +1,9 @@
-package dsa
+package main
 
 import (
 	"bytes"
 	"encoding/binary"
+	"unsafe"
 )
 
 const (
@@ -264,7 +265,22 @@ func (tree *BT) Insert(key []byte, val []byte) {
 	}
 }
 
-func (tree *BT) Delete(key []byte) bool
+func (tree *BT) Delete(key []byte) bool {
+	if tree.root == 0 {
+		return false
+	}
+	updated := treeDelete(tree, tree.get(tree.root), key)
+	if len(updated) == 0 {
+		return false
+	}
+	tree.del(tree.root)
+	if updated.nkeys() == 0 && updated.btype() == BN_NODE {
+		tree.root = updated.getPtr(0)
+	} else {
+		tree.root = tree.new(updated)
+	}
+	return true
+}
 
 func leafDelete(new BN, old BN, idx uint16) {
 	assert(idx < old.nkeys())
@@ -283,7 +299,26 @@ func nodeMerge(new BN, left BN, right BN) {
 	nodeAppendRange(new, left, left.nkeys(), 0, right.nkeys())
 }
 
-func shouldMerge(tree *BT, node BN, idx uint16, updated BN) (int, BN)
+func shouldMerge(tree *BT, node BN, idx uint16, updated BN) (int, BN) {
+	if updated.nbytes() > BT_PAGE_SIZE/4 {
+		return 0, BN{}
+	}
+	if idx > 0 {
+		sibling := BN(tree.get(node.getPtr(idx-1)))
+		merged := sibling.nbytes() + updated.nbytes() - HEADER
+		if merged <= BT_PAGE_SIZE {
+			return -1, sibling
+		}
+	}
+	if idx + 1 <= node.nkeys() {
+		sibling := BN(tree.get(node.getPtr(idx+1)))
+		merged := sibling.nbytes() + updated.btype() - HEADER
+		if merged <= BT_PAGE_SIZE {
+			return 1, sibling
+		}
+	}
+	return 0, BN{}
+}
 
 func nodeReplace2Kid(new BN, old BN, idx uint16, ptr uint64, key []byte) {
 	// asserts of type and idx???
@@ -296,7 +331,7 @@ func nodeReplace2Kid(new BN, old BN, idx uint16, ptr uint64, key []byte) {
 	}
 }
 
-func treeDelete (tree *BT, node BN, key []byte) BN {
+func treeDelete(tree *BT, node BN, key []byte) BN {
 	if node.btype() == BN_LEAF {
 		idx := nodeLookupLE(node, key)
 		if idx == 0 || !bytes.Equal(node.getKey(idx), key) {
@@ -319,6 +354,67 @@ func nodeDelete(tree *BT, node BN, idx uint16, key []byte) BN {
 	tree.del(kptr)
 
 	new := BN(make([]byte, BT_PAGE_SIZE))
-	
-	// TODO check for merging
+	mergeDir, sibling := shouldMerge(tree, node, idx, updated)
+	switch {
+	case mergeDir < 0:
+		merged := BN(make([]byte, BT_PAGE_SIZE))
+		nodeMerge(merged, sibling, updated)
+		tree.del(node.getPtr(idx - 1))
+		nodeReplace2Kid(new, node, idx, tree.new(merged), merged.getKey(0))
+	case mergeDir > 0:
+		merged := BN(make([]byte, BT_PAGE_SIZE))
+		nodeMerge(merged, sibling, updated)
+		tree.del(node.getPtr(idx + 1))
+		nodeReplace2Kid(new, node, idx, tree.new(merged), merged.getKey(0))
+	case mergeDir == 0 && updated.nkeys() == 0:
+		assert(node.nkeys() == 1 && idx == 0)
+		new.setHeader(BN_NODE, 0)
+	case mergeDir == 0 && updated.nkeys() > 0:
+		nodeReplaceKidN(tree, new, node, idx, updated)
+	}
+	return new
+}
+
+
+// In-memory Btree
+type C struct {
+	tree BT
+	ref map[string]string
+	pages map[uint64]BN
+}
+
+func newC() *C {
+	pages := map[uint64]BN{}
+	return &C{
+		tree: BT{
+			get: func(ptr uint64) []byte {
+				node, ok := pages[ptr]
+				assert(ok)
+				return node
+			},
+			new: func(node []byte) uint64 {
+				assert(BN(node).nbytes() <= BT_PAGE_SIZE)
+				ptr := uint64(uintptr(unsafe.Pointer(&node[0])))
+				assert(pages[ptr] == nil)
+				pages[ptr] = node
+				return ptr
+			},
+			del: func(ptr uint64) {
+				assert(pages[ptr] != nil)
+				delete(pages, ptr)
+			},
+		},
+		ref: map[string]string{},
+		pages: pages,
+	}
+}
+
+func (c *C) add(key string, val string) {
+	c.tree.Insert([]byte(key), []byte(val))
+	c.ref[key] = val
+}
+
+func main() {
+	c := newC()
+	c.add("1", "10")
 }
