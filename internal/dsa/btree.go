@@ -234,5 +234,41 @@ func nodeInsert(tree *BT, new BN, node BN, idx uint16, key []byte, val []byte) {
 	nodeReplaceKidN(tree, new, node, idx, split[:nsplit]...)
 }
 
+func (tree *BT) Insert(key []byte, val []byte) {
+	if tree.root == 0 {
+		root := BN(make([]byte, BT_PAGE_SIZE))
+		root.setHeader(BN_LEAF, 2)
+		
+		// dummy
+		nodeAppendKV(root, 0, 0, nil, nil)
+
+		nodeAppendKV(root, 1, 0, key, val)
+		tree.root = tree.new(root)
+		return
+	}
+	node := treeInsert(tree, tree.get(tree.root), key, val)
+	nsplit, split := nodeSplit3(node)
+	tree.del(root)
+	if nsplit > 1 {
+		// add new level
+		root := BN(make([]byte, BT_PAGE_SIZE))
+		root.setHeader(BN_NODE, nsplit)
+		for i, knode := range split[:nsplit] {
+			ptr, key := tree.new(knode), knode.getKey(0)
+			nodeAppendKV(root, uint16(i), ptr, key, nil)
+		}
+		tree.root = tree.new(root)
+	} else {
+		tree.root = tree.new(split[0])
+	}
+}
+
+func (tree *BT) Delete(key []byte) bool
+
+func leafDelete(new BN, old BN, idx uint16)
+
+func nodeMerge(new BN, left BN, right BN)
+
+func nodeReplace2Kid(new BN, old BN, idx uint16, ptr uint64, key []byte)
 
 
