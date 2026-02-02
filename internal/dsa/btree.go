@@ -1,9 +1,10 @@
-package main
+package dsa
 
 import (
 	"bytes"
 	"encoding/binary"
 	"unsafe"
+	"fmt"
 )
 
 const (
@@ -383,7 +384,7 @@ type C struct {
 	pages map[uint64]BN
 }
 
-func newC() *C {
+func NewC() *C {
 	pages := map[uint64]BN{}
 	return &C{
 		tree: BT{
@@ -414,7 +415,121 @@ func (c *C) add(key string, val string) {
 	c.ref[key] = val
 }
 
-func main() {
-	c := newC()
-	c.add("1", "10")
+// func main() {
+// 	c := newC()
+// 	c.add("1", "10")
+// }
+
+
+func (node BN) String() string {
+    var buf bytes.Buffer
+    
+    btype := node.btype()
+    nkeys := node.nkeys()
+    
+    var typeStr string
+    switch btype {
+    case BN_LEAF:
+        typeStr = "LEAF"
+    case BN_NODE:
+        typeStr = "NODE"
+    default:
+        typeStr = fmt.Sprintf("UNKNOWN(%d)", btype)
+    }
+    
+    fmt.Fprintf(&buf, "=== %s Node (nkeys=%d, nbytes=%d, total_size=%d) ===\n", 
+        typeStr, nkeys, node.nbytes(), len(node))
+    
+    if nkeys > 0 {
+        fmt.Fprintf(&buf, "Pointers: [")
+        for i := uint16(0); i < nkeys; i++ {
+            ptr := node.getPtr(i)
+            if i > 0 {
+                buf.WriteString(", ")
+            }
+            fmt.Fprintf(&buf, "%d", ptr)
+        }
+        buf.WriteString("]\n")
+        
+        fmt.Fprintf(&buf, "Offsets:  [0")
+        for i := uint16(1); i <= nkeys; i++ {
+            offset := node.getOffset(i)
+            fmt.Fprintf(&buf, ", %d", offset)
+        }
+        buf.WriteString("]\n")
+        
+        fmt.Fprintf(&buf, "KV pairs:\n")
+        for i := uint16(0); i < nkeys; i++ {
+            key := node.getKey(i)
+            val := node.getVal(i)
+            kvPos := node.kvPos(i)
+            
+            fmt.Fprintf(&buf, "  [%2d] @pos=%d: ", i, kvPos)
+            
+            if len(key) == 0 {
+                buf.WriteString("KEY: <empty>")
+            } else if len(key) <= 50 {
+                fmt.Fprintf(&buf, "KEY: %q", string(key))
+            } else {
+                fmt.Fprintf(&buf, "KEY: %q... (%d bytes)", 
+                    string(key[:50]), len(key))
+            }
+            
+            if btype == BN_LEAF {
+                if len(val) == 0 {
+                    buf.WriteString(", VAL: <empty>")
+                } else if len(val) <= 30 {
+                    fmt.Fprintf(&buf, ", VAL: %q", string(val))
+                } else {
+                    fmt.Fprintf(&buf, ", VAL: %q... (%d bytes)", 
+                        string(val[:30]), len(val))
+                }
+            } else {
+                buf.WriteString(", VAL: <nil>")
+            }
+            buf.WriteByte('\n')
+        }
+    } else {
+        buf.WriteString("(empty node)\n")
+    }
+    
+    if len(node) > 0 {
+        fmt.Fprintf(&buf, "\nRaw data (first 100 bytes):\n")
+        limit := 100
+        if len(node) < limit {
+            limit = len(node)
+        }
+        for i := 0; i < limit; i += 16 {
+            end := i + 16
+            if end > limit {
+                end = limit
+            }
+            
+            for j := i; j < end; j++ {
+                fmt.Fprintf(&buf, "%02x ", node[j])
+                if j == i+7 {
+                    buf.WriteByte(' ')
+                }
+            }
+            
+            for j := end; j < i+16; j++ {
+                buf.WriteString("   ")
+                if j == i+7 {
+                    buf.WriteByte(' ')
+                }
+            }
+            buf.WriteString(" | ")
+            for j := i; j < end; j++ {
+                b := node[j]
+                if b >= 32 && b <= 126 {
+                    buf.WriteByte(b)
+                } else {
+                    buf.WriteByte('.')
+                }
+            }
+            buf.WriteByte('\n')
+        }
+    }
+    
+    return buf.String()
 }
