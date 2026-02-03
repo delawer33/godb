@@ -153,7 +153,6 @@ func TestSplitMaintainsSortOrder(t *testing.T) {
 	verifyTreeStructure(t, c)
 }
 
-// TODO: Falls (problem: keys are not sorted after some deletions, also in some tests deletion fails)
 func TestDeleteMaintainsSortOrder(t *testing.T) {
 	c := NewC()
 	

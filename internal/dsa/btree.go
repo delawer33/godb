@@ -297,7 +297,7 @@ func nodeMerge(new BN, left BN, right BN) {
 	assert(left.btype() == right.btype())
 	new.setHeader(left.btype(), left.nkeys()+right.nkeys())
 	nodeAppendRange(new, left, 0, 0, left.nkeys())
-	nodeAppendRange(new, left, left.nkeys(), 0, right.nkeys())
+	nodeAppendRange(new, right, left.nkeys(), 0, right.nkeys())
 }
 
 func shouldMerge(tree *BT, node BN, idx uint16, updated BN) (int, BN) {
@@ -311,9 +311,9 @@ func shouldMerge(tree *BT, node BN, idx uint16, updated BN) (int, BN) {
 			return -1, sibling
 		}
 	}
-	if idx + 1 <= node.nkeys() {
+	if idx + 1 < node.nkeys() {
 		sibling := BN(tree.get(node.getPtr(idx+1)))
-		merged := sibling.nbytes() + updated.btype() - HEADER
+		merged := sibling.nbytes() + updated.nbytes() - HEADER
 		if merged <= BT_PAGE_SIZE {
 			return 1, sibling
 		}
@@ -335,7 +335,7 @@ func nodeReplace2Kid(new BN, old BN, idx uint16, ptr uint64, key []byte) {
 func treeDelete(tree *BT, node BN, key []byte) BN {
 	if node.btype() == BN_LEAF {
 		idx := nodeLookupLE(node, key)
-		if idx == 0 || !bytes.Equal(node.getKey(idx), key) {
+		if !bytes.Equal(node.getKey(idx), key) {
 			return nil
 		}
 		new := BN(make([]byte, BT_PAGE_SIZE))
@@ -361,10 +361,10 @@ func nodeDelete(tree *BT, node BN, idx uint16, key []byte) BN {
 		merged := BN(make([]byte, BT_PAGE_SIZE))
 		nodeMerge(merged, sibling, updated)
 		tree.del(node.getPtr(idx - 1))
-		nodeReplace2Kid(new, node, idx, tree.new(merged), merged.getKey(0))
+		nodeReplace2Kid(new, node, idx-1, tree.new(merged), merged.getKey(0))
 	case mergeDir > 0:
 		merged := BN(make([]byte, BT_PAGE_SIZE))
-		nodeMerge(merged, sibling, updated)
+		nodeMerge(merged, updated, sibling)
 		tree.del(node.getPtr(idx + 1))
 		nodeReplace2Kid(new, node, idx, tree.new(merged), merged.getKey(0))
 	case mergeDir == 0 && updated.nkeys() == 0:
@@ -372,6 +372,13 @@ func nodeDelete(tree *BT, node BN, idx uint16, key []byte) BN {
 		new.setHeader(BN_NODE, 0)
 	case mergeDir == 0 && updated.nkeys() > 0:
 		nodeReplaceKidN(tree, new, node, idx, updated)
+		if idx > 0 {
+			pos := new.kvPos(idx)
+			firstKey := updated.getKey(0)
+			binary.LittleEndian.PutUint16(new[pos+0:], uint16(len(firstKey)))
+			binary.LittleEndian.PutUint16(new[pos+2:], 0)
+			copy(new[pos+4:], firstKey)
+		}
 	}
 	return new
 }
