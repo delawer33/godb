@@ -1,15 +1,15 @@
-package dsa
+package btree
 
 import (
 	"bytes"
 	"encoding/binary"
-	"unsafe"
 	"fmt"
+	"unsafe"
 )
 
 const (
-	HEADER = 4
-	BT_PAGE_SIZE = 4096
+	HEADER          = 4
+	BT_PAGE_SIZE    = 4096
 	BT_MAX_KEY_SIZE = 1000
 	BT_MAX_VAL_SIZE = 3000
 
@@ -20,9 +20,9 @@ const (
 type BN []byte // B-tree node
 
 func assert(condition bool) {
-    if !condition {
-        panic("assertion failed")
-    }
+	if !condition {
+		panic("assertion failed")
+	}
 }
 
 func init() {
@@ -84,6 +84,19 @@ func (node BN) kvPos(idx uint16) uint16 {
 	return HEADER + 8*node.nkeys() + 2*node.nkeys() + node.getOffset(idx)
 }
 
+func (node BN) kvSize(idx uint16) uint16 {
+	pos := node.kvPos(idx)
+	var next uint16
+
+	if idx+1 < node.nkeys() {
+		next = node.kvPos(idx + 1)
+	} else {
+		next = node.nbytes()
+	}
+
+	return next - pos
+}
+
 func (node BN) getKey(idx uint16) []byte {
 	pos := node.kvPos(idx)
 	klen := binary.LittleEndian.Uint16(node[pos:])
@@ -117,13 +130,11 @@ func nodeLookupLE(node BN, key []byte) uint16 {
 	return found
 }
 
-// leaves
-
 func leafInsert(new BN, old BN, idx uint16, key []byte, val []byte) {
-	new.setHeader(BN_LEAF, old.nkeys() + 1)
+	new.setHeader(BN_LEAF, old.nkeys()+1)
 	nodeAppendRange(new, old, 0, 0, idx)
 	nodeAppendKV(new, idx, 0, key, val)
-	nodeAppendRange(new, old, idx+1, idx, old.nkeys()-idx)	
+	nodeAppendRange(new, old, idx+1, idx, old.nkeys()-idx)
 }
 
 func leafUpdate(new BN, old BN, idx uint16, key []byte, val []byte) {
@@ -175,19 +186,62 @@ func nodeReplaceKidN(tree *BT, new BN, old BN, idx uint16, kids ...BN) {
 	nodeAppendRange(new, old, idx+inc, idx+1, old.nkeys()-idx-1)
 }
 
-func nodeSplit2(left BN, right BN, old BN) {
-	nkeys := old.nkeys()
-	splitIdx := nkeys / 2
-	if splitIdx == 0 {
-		splitIdx = 1
-	}
-	btype := old.btype()
-	left.setHeader(btype, splitIdx)
-	right.setHeader(btype, nkeys-splitIdx)
+// check how many bytes it will take to copy `count` KV's 
+// from `from` to new node. Only for leaf nodes
+func leafSizeFor(old BN, from, count uint16) uint16 {
+	assert(old.btype() == BN_LEAF)
+	size := uint16(HEADER)
+	size += (count + 1) * 2
 
-	nodeAppendRange(left, old, 0, 0, splitIdx)
-	nodeAppendRange(right, old, 0, splitIdx, nkeys-splitIdx)
+	if count == 0 {
+		return size
+	}
+
+	start := old.kvPos(from)
+	end := old.nbytes()
+	if from+count < old.nkeys() {
+		end = old.kvPos(from + count)
+	}
+
+	size += end - start
+	return size
 }
+
+func nodeSplit2(left BN, right BN, old BN) {
+	n := old.nkeys()
+	btype := old.btype()
+
+	bestIdx := uint16(0)
+	bestMax := uint16(^uint16(0))
+
+	for i := uint16(1); i < n; i++ {
+		ls := leafSizeFor(old, 0, i)
+		rs := leafSizeFor(old, i, n-i)
+
+		if ls > BT_PAGE_SIZE || rs > BT_PAGE_SIZE {
+			continue
+		}
+
+		max := ls
+		if rs > max {
+			max = rs
+		}
+
+		if max < bestMax {
+			bestMax = max
+			bestIdx = i
+		}
+	}
+
+	assert(bestIdx > 0)
+
+	left.setHeader(btype, bestIdx)
+	right.setHeader(btype, n-bestIdx)
+
+	nodeAppendRange(left, old, 0, 0, bestIdx)
+	nodeAppendRange(right, old, 0, bestIdx, n-bestIdx)
+}
+
 
 func nodeSplit3(old BN) (uint16, [3]BN) {
 	if old.nbytes() <= BT_PAGE_SIZE {
@@ -222,7 +276,7 @@ func treeInsert(tree *BT, node BN, key []byte, val []byte) BN {
 			leafInsert(new, node, idx+1, key, val)
 		}
 	case BN_NODE:
-		 nodeInsert(tree, new, node, idx, key, val)
+		nodeInsert(tree, new, node, idx, key, val)
 	default:
 		panic("bad node")
 	}
@@ -241,7 +295,7 @@ func (tree *BT) Insert(key []byte, val []byte) {
 	if tree.root == 0 {
 		root := BN(make([]byte, BT_PAGE_SIZE))
 		root.setHeader(BN_LEAF, 2)
-		
+
 		// dummy
 		nodeAppendKV(root, 0, 0, nil, nil)
 
@@ -252,6 +306,7 @@ func (tree *BT) Insert(key []byte, val []byte) {
 	node := treeInsert(tree, tree.get(tree.root), key, val)
 	nsplit, split := nodeSplit3(node)
 	tree.del(tree.root)
+	// TODO dummy??
 	if nsplit > 1 {
 		// add new level
 		root := BN(make([]byte, BT_PAGE_SIZE))
@@ -305,14 +360,14 @@ func shouldMerge(tree *BT, node BN, idx uint16, updated BN) (int, BN) {
 		return 0, BN{}
 	}
 	if idx > 0 {
-		sibling := BN(tree.get(node.getPtr(idx-1)))
+		sibling := BN(tree.get(node.getPtr(idx - 1)))
 		merged := sibling.nbytes() + updated.nbytes() - HEADER
 		if merged <= BT_PAGE_SIZE {
 			return -1, sibling
 		}
 	}
-	if idx + 1 < node.nkeys() {
-		sibling := BN(tree.get(node.getPtr(idx+1)))
+	if idx+1 < node.nkeys() {
+		sibling := BN(tree.get(node.getPtr(idx + 1)))
 		merged := sibling.nbytes() + updated.nbytes() - HEADER
 		if merged <= BT_PAGE_SIZE {
 			return 1, sibling
@@ -326,7 +381,7 @@ func nodeReplace2Kid(new BN, old BN, idx uint16, ptr uint64, key []byte) {
 	new.setHeader(BN_NODE, old.nkeys()-1)
 	nodeAppendRange(new, old, 0, 0, idx)
 	nodeAppendKV(new, idx, ptr, key, nil)
-	
+
 	if idx+2 < old.nkeys() {
 		nodeAppendRange(new, old, idx+1, idx+2, old.nkeys()-idx-2)
 	}
@@ -383,11 +438,10 @@ func nodeDelete(tree *BT, node BN, idx uint16, key []byte) BN {
 	return new
 }
 
-
 // In-memory Btree
 type C struct {
-	tree BT
-	ref map[string]string
+	tree  BT
+	ref   map[string]string
 	pages map[uint64]BN
 }
 
@@ -412,7 +466,7 @@ func NewC() *C {
 				delete(pages, ptr)
 			},
 		},
-		ref: map[string]string{},
+		ref:   map[string]string{},
 		pages: pages,
 	}
 }
@@ -422,121 +476,115 @@ func (c *C) add(key string, val string) {
 	c.ref[key] = val
 }
 
-// func main() {
-// 	c := newC()
-// 	c.add("1", "10")
-// }
-
-
 func (node BN) String() string {
-    var buf bytes.Buffer
-    
-    btype := node.btype()
-    nkeys := node.nkeys()
-    
-    var typeStr string
-    switch btype {
-    case BN_LEAF:
-        typeStr = "LEAF"
-    case BN_NODE:
-        typeStr = "NODE"
-    default:
-        typeStr = fmt.Sprintf("UNKNOWN(%d)", btype)
-    }
-    
-    fmt.Fprintf(&buf, "=== %s Node (nkeys=%d, nbytes=%d, total_size=%d) ===\n", 
-        typeStr, nkeys, node.nbytes(), len(node))
-    
-    if nkeys > 0 {
-        fmt.Fprintf(&buf, "Pointers: [")
-        for i := uint16(0); i < nkeys; i++ {
-            ptr := node.getPtr(i)
-            if i > 0 {
-                buf.WriteString(", ")
-            }
-            fmt.Fprintf(&buf, "%d", ptr)
-        }
-        buf.WriteString("]\n")
-        
-        fmt.Fprintf(&buf, "Offsets:  [0")
-        for i := uint16(1); i <= nkeys; i++ {
-            offset := node.getOffset(i)
-            fmt.Fprintf(&buf, ", %d", offset)
-        }
-        buf.WriteString("]\n")
-        
-        fmt.Fprintf(&buf, "KV pairs:\n")
-        for i := uint16(0); i < nkeys; i++ {
-            key := node.getKey(i)
-            val := node.getVal(i)
-            kvPos := node.kvPos(i)
-            
-            fmt.Fprintf(&buf, "  [%2d] @pos=%d: ", i, kvPos)
-            
-            if len(key) == 0 {
-                buf.WriteString("KEY: <empty>")
-            } else if len(key) <= 50 {
-                fmt.Fprintf(&buf, "KEY: %q", string(key))
-            } else {
-                fmt.Fprintf(&buf, "KEY: %q... (%d bytes)", 
-                    string(key[:50]), len(key))
-            }
-            
-            if btype == BN_LEAF {
-                if len(val) == 0 {
-                    buf.WriteString(", VAL: <empty>")
-                } else if len(val) <= 30 {
-                    fmt.Fprintf(&buf, ", VAL: %q", string(val))
-                } else {
-                    fmt.Fprintf(&buf, ", VAL: %q... (%d bytes)", 
-                        string(val[:30]), len(val))
-                }
-            } else {
-                buf.WriteString(", VAL: <nil>")
-            }
-            buf.WriteByte('\n')
-        }
-    } else {
-        buf.WriteString("(empty node)\n")
-    }
-    
-    if len(node) > 0 {
-        fmt.Fprintf(&buf, "\nRaw data (first 100 bytes):\n")
-        limit := 100
-        if len(node) < limit {
-            limit = len(node)
-        }
-        for i := 0; i < limit; i += 16 {
-            end := i + 16
-            if end > limit {
-                end = limit
-            }
-            
-            for j := i; j < end; j++ {
-                fmt.Fprintf(&buf, "%02x ", node[j])
-                if j == i+7 {
-                    buf.WriteByte(' ')
-                }
-            }
-            
-            for j := end; j < i+16; j++ {
-                buf.WriteString("   ")
-                if j == i+7 {
-                    buf.WriteByte(' ')
-                }
-            }
-            buf.WriteString(" | ")
-            for j := i; j < end; j++ {
-                b := node[j]
-                if b >= 32 && b <= 126 {
-                    buf.WriteByte(b)
-                } else {
-                    buf.WriteByte('.')
-                }
-            }
-            buf.WriteByte('\n')
-        }
-    }
-    
-    return buf.String()
+	var buf bytes.Buffer
+
+	btype := node.btype()
+	nkeys := node.nkeys()
+
+	var typeStr string
+	switch btype {
+	case BN_LEAF:
+		typeStr = "LEAF"
+	case BN_NODE:
+		typeStr = "NODE"
+	default:
+		typeStr = fmt.Sprintf("UNKNOWN(%d)", btype)
+	}
+
+	fmt.Fprintf(&buf, "=== %s Node (nkeys=%d, nbytes=%d, total_size=%d) ===\n",
+		typeStr, nkeys, node.nbytes(), len(node))
+
+	if nkeys > 0 {
+		fmt.Fprintf(&buf, "Pointers: [")
+		for i := uint16(0); i < nkeys; i++ {
+			ptr := node.getPtr(i)
+			if i > 0 {
+				buf.WriteString(", ")
+			}
+			fmt.Fprintf(&buf, "%d", ptr)
+		}
+		buf.WriteString("]\n")
+
+		fmt.Fprintf(&buf, "Offsets:  [0")
+		for i := uint16(1); i <= nkeys; i++ {
+			offset := node.getOffset(i)
+			fmt.Fprintf(&buf, ", %d", offset)
+		}
+		buf.WriteString("]\n")
+
+		fmt.Fprintf(&buf, "KV pairs:\n")
+		for i := uint16(0); i < nkeys; i++ {
+			key := node.getKey(i)
+			val := node.getVal(i)
+			kvPos := node.kvPos(i)
+
+			fmt.Fprintf(&buf, "  [%2d] @pos=%d: ", i, kvPos)
+
+			if len(key) == 0 {
+				buf.WriteString("KEY: <empty>")
+			} else if len(key) <= 50 {
+				fmt.Fprintf(&buf, "KEY: %q", string(key))
+			} else {
+				fmt.Fprintf(&buf, "KEY: %q... (%d bytes)",
+					string(key[:50]), len(key))
+			}
+
+			if btype == BN_LEAF {
+				if len(val) == 0 {
+					buf.WriteString(", VAL: <empty>")
+				} else if len(val) <= 30 {
+					fmt.Fprintf(&buf, ", VAL: %q", string(val))
+				} else {
+					fmt.Fprintf(&buf, ", VAL: %q... (%d bytes)",
+						string(val[:30]), len(val))
+				}
+			} else {
+				buf.WriteString(", VAL: <nil>")
+			}
+			buf.WriteByte('\n')
+		}
+	} else {
+		buf.WriteString("(empty node)\n")
+	}
+
+	if len(node) > 0 {
+		fmt.Fprintf(&buf, "\nRaw data (first 100 bytes):\n")
+		limit := 100
+		if len(node) < limit {
+			limit = len(node)
+		}
+		for i := 0; i < limit; i += 16 {
+			end := i + 16
+			if end > limit {
+				end = limit
+			}
+
+			for j := i; j < end; j++ {
+				fmt.Fprintf(&buf, "%02x ", node[j])
+				if j == i+7 {
+					buf.WriteByte(' ')
+				}
+			}
+
+			for j := end; j < i+16; j++ {
+				buf.WriteString("   ")
+				if j == i+7 {
+					buf.WriteByte(' ')
+				}
+			}
+			buf.WriteString(" | ")
+			for j := i; j < end; j++ {
+				b := node[j]
+				if b >= 32 && b <= 126 {
+					buf.WriteByte(b)
+				} else {
+					buf.WriteByte('.')
+				}
+			}
+			buf.WriteByte('\n')
+		}
+	}
+
+	return buf.String()
 }
