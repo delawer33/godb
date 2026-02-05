@@ -63,7 +63,7 @@ func verifyTreeStructure(t *testing.T, c *C) {
 				childNode := BN(c.tree.get(childPtr))
 				nodeKey, childKey := bn.getKey(i), childNode.getKey(0)
 				if !bytes.Equal(nodeKey, childKey) {
-					t.Errorf("Child first key is no equal to his key in parent")
+					t.Errorf("Child first key is not equal to his key in parent")
 				}
 			}
 		}
@@ -216,7 +216,6 @@ func TestDeleteMaintainsSortOrder(t *testing.T) {
 	verifyTreeStructure(t, c)
 }
 
-
 func TestBTreeConsistency(t *testing.T) {
 	c := NewC()
 	
@@ -277,7 +276,6 @@ func TestLargeKeysAndValues(t *testing.T) {
 	}
 }
 
-
 func TestRandomOperations(t *testing.T) {
 	c := NewC()
 	
@@ -310,7 +308,125 @@ func TestRandomOperations(t *testing.T) {
 	verifyTreeStructure(t, c)
 }
 
+func TestGetBasic(t *testing.T) {
+	c := NewC()
 
+	c.add("a", "1")
+	c.add("b", "2")
+	c.add("c", "3")
+
+	val, ok := c.tree.Get([]byte("a"))
+	if !ok || string(val) != "1" {
+		t.Fatalf("Get(a) = %q, %v; want 1, true", val, ok)
+	}
+
+	val, ok = c.tree.Get([]byte("b"))
+	if !ok || string(val) != "2" {
+		t.Fatalf("Get(b) = %q, %v; want 2, true", val, ok)
+	}
+
+	val, ok = c.tree.Get([]byte("c"))
+	if !ok || string(val) != "3" {
+		t.Fatalf("Get(c) = %q, %v; want 3, true", val, ok)
+	}
+}
+
+func TestGetNotFound(t *testing.T) {
+	c := NewC()
+
+	c.add("a", "1")
+	c.add("b", "2")
+
+	if val, ok := c.tree.Get([]byte("c")); ok || val != nil {
+		t.Fatalf("Get(c) = %q, %v; want nil, false", val, ok)
+	}
+}
+
+func TestGetAfterUpdate(t *testing.T) {
+	c := NewC()
+
+	c.add("key", "v1")
+	c.add("key", "v2")
+
+	val, ok := c.tree.Get([]byte("key"))
+	if !ok || string(val) != "v2" {
+		t.Fatalf("Get(key) = %q, %v; want v2, true", val, ok)
+	}
+}
+
+
+func TestGetAfterDelete(t *testing.T) {
+	c := NewC()
+
+	c.add("a", "1")
+	c.add("b", "2")
+
+	ok := c.tree.Delete([]byte("a"))
+	if !ok {
+		t.Fatal("Delete(a) failed")
+	}
+
+	if val, ok := c.tree.Get([]byte("a")); ok || val != nil {
+		t.Fatalf("Get(a) after delete = %q, %v; want nil, false", val, ok)
+	}
+
+	val, ok := c.tree.Get([]byte("b"))
+	if !ok || string(val) != "2" {
+		t.Fatalf("Get(b) = %q, %v; want 2, true", val, ok)
+	}
+}
+
+
+func TestGetDoesNotModifyTree(t *testing.T) {
+	c := NewC()
+
+	for i := 0; i < 100; i++ {
+		key := fmt.Sprintf("key_%d", i)
+		c.add(key, "val")
+	}
+
+	before := len(c.pages)
+
+	for i := 0; i < 100; i++ {
+		c.tree.Get([]byte(fmt.Sprintf("key_%d", i)))
+	}
+
+	after := len(c.pages)
+	if before != after {
+		t.Fatalf("Get modified tree: pages before=%d after=%d", before, after)
+	}
+}
+
+
+func TestGetRandomOperations(t *testing.T) {
+	c := NewC()
+	ref := map[string]string{}
+
+	for i := 0; i < 1000; i++ {
+		op := rand.Intn(3)
+		key := fmt.Sprintf("key_%d", rand.Intn(100))
+
+		switch op {
+		case 0, 1:
+			val := fmt.Sprintf("val_%d", rand.Intn(1000))
+			c.add(key, val)
+			ref[key] = val
+		case 2:
+			c.tree.Delete([]byte(key))
+			delete(ref, key)
+		}
+
+		if i%50 == 0 {
+			for k, v := range ref {
+				val, ok := c.tree.Get([]byte(k))
+				if !ok || string(val) != v {
+					t.Fatalf("Get(%s) = %q, %v; want %s, true",
+						k, val, ok, v)
+				}
+			}
+		}
+	}
+}
 
 // benchmarks TODO
 

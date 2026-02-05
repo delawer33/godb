@@ -306,7 +306,6 @@ func (tree *BT) Insert(key []byte, val []byte) {
 	node := treeInsert(tree, tree.get(tree.root), key, val)
 	nsplit, split := nodeSplit3(node)
 	tree.del(tree.root)
-	// TODO dummy??
 	if nsplit > 1 {
 		// add new level
 		root := BN(make([]byte, BT_PAGE_SIZE))
@@ -436,6 +435,34 @@ func nodeDelete(tree *BT, node BN, idx uint16, key []byte) BN {
 		}
 	}
 	return new
+}
+
+
+func treeGet(tree *BT, node BN, key []byte) ([]byte, bool) {
+	idx := nodeLookupLE(node, key)
+
+	switch node.btype() {
+	case BN_LEAF:
+		if bytes.Equal(node.getKey(idx), key) {
+			return node.getVal(idx), true
+		}
+		return nil, false
+
+	case BN_NODE:
+		ptr := node.getPtr(idx)
+		return treeGet(tree, tree.get(ptr), key)
+
+	default:
+		panic("bad node type")
+	}
+}
+
+
+func (tree *BT) Get(key []byte) ([]byte, bool) {
+	if tree.root == 0 {
+		return nil, false
+	}
+	return treeGet(tree, tree.get(tree.root), key)
 }
 
 // In-memory Btree
