@@ -186,7 +186,7 @@ func nodeReplaceKidN(tree *BT, new BN, old BN, idx uint16, kids ...BN) {
 	nodeAppendRange(new, old, idx+inc, idx+1, old.nkeys()-idx-1)
 }
 
-// check how many bytes it will take to copy `count` KV's 
+// check how many bytes it will take to copy `count` KV's
 // from `from` to new node. Only for leaf nodes
 func leafSizeFor(old BN, from, count uint16) uint16 {
 	assert(old.btype() == BN_LEAF)
@@ -241,7 +241,6 @@ func nodeSplit2(left BN, right BN, old BN) {
 	nodeAppendRange(left, old, 0, 0, bestIdx)
 	nodeAppendRange(right, old, 0, bestIdx, n-bestIdx)
 }
-
 
 func nodeSplit3(old BN) (uint16, [3]BN) {
 	if old.nbytes() <= BT_PAGE_SIZE {
@@ -437,7 +436,6 @@ func nodeDelete(tree *BT, node BN, idx uint16, key []byte) BN {
 	return new
 }
 
-
 func treeGet(tree *BT, node BN, key []byte) ([]byte, bool) {
 	idx := nodeLookupLE(node, key)
 
@@ -456,7 +454,6 @@ func treeGet(tree *BT, node BN, key []byte) ([]byte, bool) {
 		panic("bad node type")
 	}
 }
-
 
 func (tree *BT) Get(key []byte) ([]byte, bool) {
 	if tree.root == 0 {
