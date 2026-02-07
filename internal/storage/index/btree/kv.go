@@ -1,10 +1,16 @@
 package btree
 
 import (
+	"bytes"
+	"encoding/binary"
 	"fmt"
 	"syscall"
 
 	"golang.org/x/sys/unix"
+)
+
+const (
+	DB_SIG  = "mydb000000000000"
 )
 
 type KV struct {
@@ -19,6 +25,7 @@ type KV struct {
 		flushed uint64  // db size in number of pages
 		temp [][]byte   // newly allocated pages
 	}
+	failed bool
 }
 
 func (db *KV) Open() error {
@@ -33,8 +40,9 @@ func (db *KV) Get(key []byte, val []byte) ([]byte, bool) {
 }
 
 func (db *KV) Set(key []byte, val []byte) (error) {
+	meta := saveMeta(db)
 	db.tree.Insert(key, val)
-	return updateFile(db)
+	return updateOrRevert(db, meta)
 }
 
 func (db *KV) Del(key []byte) (bool, error) {
@@ -92,8 +100,6 @@ func updateFile(db *KV) error {
 	return syscall.Fsync(db.fd)
 }
 
-func updateRoot(db *KV) error
-
 func writePages(db *KV) error {
 	size := (int(db.page.flushed) + len(db.page.temp)) * BT_PAGE_SIZE
 	if err := extendMmap(db, size); err != nil {
@@ -107,3 +113,58 @@ func writePages(db *KV) error {
 	db.page.temp = db.page.temp[:0]
 	return nil
 }
+
+func saveMeta(db *KV) []byte {
+	var data [32]byte
+	copy(data[:16], []byte(DB_SIG))
+	binary.LittleEndian.PutUint64(data[16:], db.tree.root)
+	binary.LittleEndian.PutUint64(data[24:], db.page.flushed)
+	return data[:]
+}
+
+func loadMeta(db *KV, data []byte) {
+	assert(len(data) >= 32)
+	assert(!bytes.Equal(data[:16], []byte(DB_SIG)))
+	db.tree.root = binary.LittleEndian.Uint64(data[16:24])
+	db.page.flushed = binary.LittleEndian.Uint64(data[24:32])
+}
+
+func readRoot(db *KV, fileSize int64) error {
+	if fileSize == 0 {
+		db.page.flushed = 1
+		return nil
+	}
+	data := db.mmap.chunks[0]
+	loadMeta(db, data)
+
+	return nil
+}
+
+func updateRoot(db *KV) error {
+	if _, err := syscall.Pwrite(db.fd, saveMeta(db), 0); err != nil {
+		return fmt.Errorf("write meta page: %w", err)
+	}
+	return nil
+}
+
+func updateOrRevert(db *KV, meta []byte) error {
+	if db.failed {
+		if _, err := syscall.Pwrite(db.fd, meta, 0); err != nil {
+			return fmt.Errorf("rewrite meta page: %w", err)
+		}
+		if err := syscall.Fsync(db.fd); err != nil {
+			return fmt.Errorf("fsync meta page: %w", err)
+		}
+		db.failed = false
+	}
+	err := updateFile(db)
+	if err != nil {
+		db.failed = true
+		// reverting im-memory states to allow reads
+		loadMeta(db, meta)
+		db.page.temp = db.page.temp[:0]
+	}
+	return err
+}
+
+
