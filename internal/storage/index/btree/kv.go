@@ -11,7 +11,36 @@ import (
 
 const (
 	DB_SIG  = "mydb000000000000"
+	FREE_LIST_HEADER = 8
+	FREE_LIST_CAP = (BT_PAGE_SIZE - FREE_LIST_HEADER) / 8
 )
+
+// freeList node
+// | next | pointers |
+// |  8B  |   n*8B   |
+type LNode []byte
+
+func (node LNode) getNext() uint64
+func (node LNode) setNext(next uint64)
+func (node LNode) getPtr(idx int) uint64
+func (node LNode) setPtr(idx int, ptr uint64)
+
+type FreeList struct {
+	get func(uint64) []byte
+	new func([]byte) uint64
+	set func(uint64) []byte
+
+	headPage uint64
+	headSeq uint64 // seq from what we can read
+	tailPage uint64
+	tailSeq uint64 // seq to what we can read
+	maxSeq uint64 // tailSeq snapshot to prevect consuming new items
+}
+
+// 0 if failure
+func (fl *FreeList) PopHead() uint64
+
+func (fl *FreeList) PushTail(ptr uint64)
 
 type KV struct {
 	Path string
@@ -26,6 +55,7 @@ type KV struct {
 		temp [][]byte   // newly allocated pages
 	}
 	failed bool
+	free FreeList
 }
 
 func (db *KV) Open() error {
