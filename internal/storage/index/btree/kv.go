@@ -28,7 +28,7 @@ func (node LNode) setPtr(idx int, ptr uint64)
 type FreeList struct {
 	get func(uint64) []byte
 	new func([]byte) uint64
-	set func(uint64) []byte
+	set func(uint64) []byte // copies a page and returns bytes that we can change. cant use get for this, because mmpa return read only
 
 	headPage uint64
 	headSeq uint64 // seq from what we can read
@@ -37,10 +37,55 @@ type FreeList struct {
 	maxSeq uint64 // tailSeq snapshot to prevect consuming new items
 }
 
-// 0 if failure
-func (fl *FreeList) PopHead() uint64
+func seq2idx(seq uint64) int {
+	return int(seq % FREE_LIST_CAP)
+}
 
-func (fl *FreeList) PushTail(ptr uint64)
+func (fl *FreeList) setMaxSeq() {
+	fl.maxSeq = fl.tailSeq
+}
+
+// 0 if failure
+func (fl *FreeList) PopHead() uint64 {
+	ptr, head := flPop(fl)
+	if head != 0 {
+		fl.PushTail(head)
+	}
+	return ptr
+}
+
+func (fl *FreeList) PushTail(ptr uint64) {
+	LNode(fl.set(fl.tailPage)).setPtr(seq2idx(fl.tailSeq), ptr)
+	fl.tailSeq++
+	// node is full
+	if seq2idx(fl.tailSeq) == 0 {
+		next, head := flPop(fl)
+		if next == 0 {
+			next = fl.new(make([]byte, BT_PAGE_SIZE))
+		}
+		LNode(fl.set(fl.tailPage)).setNext(next)
+		fl.tailPage = next
+		
+		if head != 0 {
+			LNode(fl.set(fl.tailPage)).setPtr(0, head)
+			fl.tailSeq++
+		}
+	}
+}
+
+func flPop(fl *FreeList) (ptr uint64, head uint64) {
+	if fl.headSeq == fl.maxSeq {
+		return 0, 0
+	}
+	node := LNode(fl.get(fl.headPage))
+	ptr = node.getPtr(seq2idx(fl.headSeq))
+	fl.headSeq++
+	if seq2idx(fl.headSeq) == 0 {
+		head, fl.headPage = fl.headPage, node.getNext()
+		assert(fl.headPage != 0)
+	}
+	return ptr, fl.headPage
+}
 
 type KV struct {
 	Path string
@@ -60,9 +105,12 @@ type KV struct {
 
 func (db *KV) Open() error {
 	db.tree.get = db.pageRead
-	db.tree.new = db.pageAppend
-	db.tree.del = func(uint64) {}
-	// ...
+	db.tree.new = db.pageAlloc
+	db.tree.del = db.free.PushTail
+	
+	db.free.get = db.pageRead
+	db.free.new = db.pageAppend
+	db.free.set = db.pageWrite
 }
 
 func (db *KV) Get(key []byte, val []byte) ([]byte, bool) {
@@ -93,6 +141,10 @@ func (db *KV) pageRead(ptr uint64) []byte {
 	}
 	panic("bad ptr")
 }
+
+func (db *KV) pageAlloc([]byte) uint64
+
+func (db *KV) pageWrite(uint64) []byte
 
 func extendMmap(db *KV, size int) error {
 	if size <= db.mmap.total {
